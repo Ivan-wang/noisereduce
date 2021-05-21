@@ -61,7 +61,7 @@ def test_reduce_cafe_noise_tf():
     reduced_noise = nr.reduce_noise(
         audio_clip=audio_clip_cafe,
         noise_clip=noise_clip,
-        use_tensorflow=True,
+        use_cuda=True,
         verbose=True,
     )
     return float32_to_int16(reduced_noise)

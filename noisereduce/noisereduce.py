@@ -2,58 +2,36 @@ import scipy.signal
 import numpy as np
 import librosa
 from noisereduce.plotting import plot_reduction_steps
-from tqdm.autonotebook import tqdm
+from tqdm import tqdm
 import warnings
 
-
-def _stft(y, n_fft, hop_length, win_length, use_tensorflow=False):
-    if use_tensorflow:
+def _stft(y, n_fft, hop_length, win_length, use_cuda=False):
+    if use_cuda:
         # return librosa.stft(y=y, n_fft=n_fft, hop_length=hop_length, win_length=win_length, center=True)
-        return _stft_tensorflow(y, n_fft, hop_length, win_length)
+        return _stft_torch(y, n_fft, hop_length, win_length)
     else:
         return librosa.stft(
             y=y, n_fft=n_fft, hop_length=hop_length, win_length=win_length, center=True
         )
 
-
-def _istft(y, n_fft, hop_length, win_length, use_tensorflow=False):
-    if use_tensorflow:
+def _istft(y, n_fft, hop_length, win_length, use_cuda=False):
+    if use_cuda:
         # return librosa.istft(y, hop_length, win_length)
-        return _istft_tensorflow(y.T, n_fft, hop_length, win_length)
+        return _istft_torch(y, n_fft, hop_length, win_length)
     else:
         return librosa.istft(y, hop_length, win_length)
 
+def _stft_torch(y, n_fft, hop_length, win_length):
+    y = torch.from_numpy(y)
+    yt = torch.stft(y, n_fft=n_fft, hop_length=hop_length, win_length=win_length,
+        window=torch.hann_window(window_length=win_length, periodic=True),
+        center=True, return_complex=True, normalized=False)
+    return yt.numpy()
 
-def _stft_librosa(y, n_fft, hop_length, win_length):
-    return librosa.stft(
-        y=y, n_fft=n_fft, hop_length=hop_length, win_length=win_length, center=True
-    )
-
-
-def _istft_librosa(y, hop_length, win_length):
-    return librosa.istft(y, hop_length, win_length)
-
-
-def _stft_tensorflow(y, n_fft, hop_length, win_length):
-    return (
-        tf.signal.stft(
-            y,
-            win_length,
-            hop_length,
-            n_fft,
-            pad_end=True,
-            window_fn=tf.signal.hann_window,
-        )
-        .numpy()
-        .T
-    )
-
-
-def _istft_tensorflow(y, n_fft, hop_length, win_length):
-    return tf.signal.inverse_stft(
-        y.astype(np.complex64), win_length, hop_length, n_fft
-    ).numpy()
-
+def _istft_cuda(y, n_fft, hop_length, win_length):
+    torch_ifft = torch.istft(torch.from_numpy(y), n_fft=n_fft, hop_length=hop_length,
+        win_length=win_length, window=torch.hann_window(window_length=win_length, periodic=True))
+    return torch_ifft.numpy()
 
 def _amp_to_db(x):
     return librosa.core.amplitude_to_db(x, ref=1.0, amin=1e-20, top_db=80.0)
@@ -73,7 +51,7 @@ def update_pbar(pbar, message):
 
 def _smoothing_filter(n_grad_freq, n_grad_time):
     """Generates a filter to smooth the mask for the spectrogram
-        
+
     Arguments:
         n_grad_freq {[type]} -- [how many frequency channels to smooth over with the mask.]
         n_grad_time {[type]} -- [how many time channels to smooth over with the mask.]
@@ -98,12 +76,12 @@ def _smoothing_filter(n_grad_freq, n_grad_time):
 
 
 def mask_signal(sig_stft, sig_mask):
-    """ Reduces amplitude of time/frequency regions of a spectrogram based upon a mask 
-        
+    """ Reduces amplitude of time/frequency regions of a spectrogram based upon a mask
+
     Arguments:
         sig_stft {[type]} -- spectrogram of signal
         sig_mask {[type]} -- mask to apply to signal
-    
+
     Returns:
         sig_stft_amp [type] -- masked signal
     """
@@ -111,59 +89,41 @@ def mask_signal(sig_stft, sig_mask):
     return sig_stft_amp
 
 
-def convolve_gaussian(sig_mask, smoothing_filter, use_tensorflow=False):
+def convolve_gaussian(sig_mask, smoothing_filter, use_cuda=False):
     """ Convolves a gaussian filter with a mask (or any image)
-    
+
     Arguments:
         sig_mask {[type]} -- The signal mask
         smoothing_filter {[type]} -- the filter to convolve
-    
+
     Keyword Arguments:
-        use_tensorflow {bool} -- use tensorflow.signal or scipy.signal (default: {False})
+        use_cuda {bool} -- use tensorflow.signal or scipy.signal (default: {False})
     """
-    if use_tensorflow:
+    if use_cuda:
         smoothing_filter = smoothing_filter * (
             (np.shape(smoothing_filter)[1] - 1) / 2 + 1
         )
-        smoothing_filter = smoothing_filter[:, :, tf.newaxis, tf.newaxis].astype(
-            "float32"
-        )
-        img = sig_mask[:, :, tf.newaxis, tf.newaxis].astype("float32")
-        return (
-            tf.nn.conv2d(img, smoothing_filter, strides=[1, 1, 1, 1], padding="SAME")
-            .numpy()
-            .squeeze()
-        )
+        smoothing_filter = smoothing_filter[None, None, :, :].astype("float32")
+        smoothing_filter = torch.from_numpy(smoothing_filter)
+        img = torch.from_numpy(sig_mask[None, None, :, :].astype("float32"))
+        padding = [(d-1)//2 for d in smoothing_filter.shape[-2:]]
+        convoloved = torch.nn.functional.conv2d(img, smoothing_filter, padding=padding).squeeze().numpy()
+        return convoloved 
     else:
         return scipy.signal.fftconvolve(sig_mask, smoothing_filter, mode="same")
 
 
-def load_tensorflow(verbose=False):
-    """loads tensorflow if it is available
-    Used as a backend for fft and convolution
-    
-    Returns:
-        bool -- whether to use tensorflow
-    """
+def load_torch(verbose=False):
     try:
-        # import tensorflow as tf
-        globals()["tf"] = __import__("tensorflow")
-
+        globals()['torch'] = __import__('torch')
         if verbose:
-            available_gpus = tf.config.experimental.list_physical_devices("GPU")
-            print("GPUs available: {}".format(available_gpus))
-        if int(tf.__version__[0]) < 2:
-            warnings.warn(
-                "Tensorflow version is below 2.0, reverting to non-tensorflow backend"
-            )
-            return False
+            if torch.cuda.is_available():
+                print('GPUs available : {}'.format(torch.cuda.current_device()))
+        globals()['torchlibrosa'] = __import__('torchlibrosa')
     except:
-        warnings.warn(
-            "Tensorflow is not installed, reverting to non-tensorflow backend"
-        )
+        warnings.warn('torchlibrosa or torch is not installed, reverting to non-torch backend')
         return False
     return True
-
 
 def reduce_noise(
     audio_clip,
@@ -176,7 +136,7 @@ def reduce_noise(
     n_std_thresh=1.5,
     prop_decrease=1.0,
     pad_clipping=True,
-    use_tensorflow=False,
+    use_cuda=False,
     verbose=False,
 ):
     """Remove noise from audio based upon a clip containing only noise
@@ -192,7 +152,7 @@ def reduce_noise(
         n_std_thresh (int): how many standard deviations louder than the mean dB of the noise (at each frequency level) to be considered signal
         prop_decrease (float): To what extent should you decrease noise (1 = all, 0 = none)
         pad_clipping (bool): Pad the signals with zeros to ensure that the reconstructed data is equal length to the data
-        use_tensorflow (bool): Use tensorflow as a backend for convolution and fft to speed up computation
+        use_cuda (bool): Use tensorflow as a backend for convolution and fft to speed up computation
         verbose (bool): Whether to plot the steps of the algorithm
 
     Returns:
@@ -200,8 +160,8 @@ def reduce_noise(
 
     """
     # load tensorflow if you are using it as a backend
-    if use_tensorflow:
-        use_tensorflow = load_tensorflow(verbose)
+    if use_cuda:
+        use_cuda = load_torch(verbose)
 
     if verbose:
         pbar = tqdm(total=7)
@@ -211,7 +171,7 @@ def reduce_noise(
     update_pbar(pbar, "STFT on noise")
     # STFT over noise
     noise_stft = _stft(
-        noise_clip, n_fft, hop_length, win_length, use_tensorflow=use_tensorflow
+        noise_clip, n_fft, hop_length, win_length, use_cuda=use_cuda
     )
     noise_stft_db = _amp_to_db(np.abs(noise_stft))  # convert to dB
     # Calculate statistics over noise
@@ -228,7 +188,7 @@ def reduce_noise(
         audio_clip = np.pad(audio_clip, [0, hop_length], mode="constant")
 
     sig_stft = _stft(
-        audio_clip, n_fft, hop_length, win_length, use_tensorflow=use_tensorflow
+        audio_clip, n_fft, hop_length, win_length, use_cuda=use_cuda
     )
     # spectrogram of signal in dB
     sig_stft_db = _amp_to_db(np.abs(sig_stft))
@@ -247,7 +207,7 @@ def reduce_noise(
     smoothing_filter = _smoothing_filter(n_grad_freq, n_grad_time)
 
     # convolve the mask with a smoothing filter
-    sig_mask = convolve_gaussian(sig_mask, smoothing_filter, use_tensorflow)
+    sig_mask = convolve_gaussian(sig_mask, smoothing_filter, use_cuda)
 
     sig_mask = sig_mask * prop_decrease
     update_pbar(pbar, "Apply mask")
@@ -258,7 +218,7 @@ def reduce_noise(
     update_pbar(pbar, "Recover signal")
     # recover the signal
     recovered_signal = _istft(
-        sig_stft_amp, n_fft, hop_length, win_length, use_tensorflow=use_tensorflow
+        sig_stft_amp, n_fft, hop_length, win_length, use_cuda=use_cuda
     )
     # fix the recovered signal length if padding signal
     if pad_clipping:
@@ -271,7 +231,7 @@ def reduce_noise(
                 n_fft,
                 hop_length,
                 win_length,
-                use_tensorflow=use_tensorflow,
+                use_cuda=use_cuda,
             )
         )
     )

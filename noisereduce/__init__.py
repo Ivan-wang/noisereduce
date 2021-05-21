@@ -1,1 +1,5 @@
 from noisereduce.noisereduce import reduce_noise
+from noisereduce.functional import reduce_noise_librosa
+from noisereduce.functional import reduce_noise_torch
+from noisereduce.functional import _smoothing_filter
+from noisereduce.functional import _smoothing_filter_torch
