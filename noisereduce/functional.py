@@ -70,7 +70,7 @@ def reduce_noise_librosa(audio_clip, noise_clip, n_grad_freq=2, n_grad_time=4,
     return audio_reduced 
 
 import torchaudio
-def reduce_noise_torch(audio_clip, noise_clip, n_grad_freq=2, n_grad_time=4,
+def reduce_noise_torch(audio_clip, noise_clip, smooth_filter, n_grad_freq=2, n_grad_time=4,
     n_fft=2048, win_length=2048, hop_length=512, n_std_thres=1.5,
     prop_decrease=1.0, pad_clipping=True):
 
@@ -105,11 +105,11 @@ def reduce_noise_torch(audio_clip, noise_clip, n_grad_freq=2, n_grad_time=4,
 
     # smoothing_filter = _smoothing_filter(n_grad_freq, n_grad_time)
     # smoothing_filter = torch.from_numpy(smoothing_filter).float()
-    smoothing_filter = _smoothing_filter_torch(n_grad_freq, n_grad_time)
+    # smoothing_filter = _smoothing_filter_torch(n_grad_freq, n_grad_time)
     audio_mask = audio_mask[None, None, :, :]
-    smoothing_filter = smoothing_filter[None, None, :, :]
-    padding = [(d-1)//2 for d in smoothing_filter.shape[-2:]]
-    audio_mask = torch.nn.functional.conv2d(audio_mask, smoothing_filter, padding=padding)
+    # smoothing_filter = smoothing_filter[None, None, :, :]
+    padding = [(d-1)//2 for d in smooth_filter.shape[-2:]]
+    audio_mask = torch.nn.functional.conv2d(audio_mask, smooth_filter, padding=padding)
     audio_mask = audio_mask.squeeze()
     audio_mask = audio_mask * prop_decrease
 
